@@ -1,0 +1,92 @@
+-- Unique Execution Plan Name
+@Plan:name( 'PlugBasedLoadPrediction' )
+@Plan:dist(receiverParallelism='4')
+@Plan:dist(publisherParallelism='4')
+
+-- Define Streams
+@Import( 'SmartPlugsDataStream:1.0.0' )
+define stream smartPlugDataStream ( meta_type string, id long, ts long, value float, property int, plug_id string, household_id string, house_id string );
+
+@Export('PlugBasedLoadPredictionStream:1.0.0')
+define stream plugBasedLoadPredictionStream ( ts long, house_id string, household_id string, plug_id string, predicted_load double );
+
+
+-- Define In-Memory Tables (can use RDBMS if required)
+@IndexBy('slice_id')
+define table historicalDataTable ( slice_id string, sum double, count long ) ;
+
+
+-- Take in SmartPlugsDataStream and drop metadata, convert it's timestamp (ts) into milliseconds and emit events to preFormattedDataStream
+@dist(parallel='8', execGroup='1')
+@info( name = 'PreFormatDataStream' )
+from smartPlugDataStream
+select id, ts * 1000 as ts, value, property, plug_id, household_id, house_id
+insert into preFormattedDataStream ;
+
+
+-- calculate slice id and emit modified events to formattedDataStream (intermediate stream)
+@dist(parallel='8', execGroup='1')
+@info( name = 'FormatDataStream' )
+from preFormattedDataStream
+select id, ts, value, property, plug_id, household_id, house_id, 
+	str:concat( house_id, '_', household_id, '_', plug_id, '_', math:round( math:floor( ( time:extract(ts, 'minute' ) + time:extract( ts, 'hour' ) * 60.0 ) / 5.0 ) ) ) as slice_id,
+	str:concat( house_id, '_', household_id, '_', plug_id, '_', math:round( math:floor( ( time:extract(ts, 'minute' ) + time:extract( ts, 'hour' ) * 60.0 ) / 5.0 ) ) + 1 ) as next_slice_id
+insert into formattedDataStream ;
+
+
+-- Calculate sum and count of usage for each 5 min window for each house->household->plug,
+-- slice and emmit it to historicalDataStream (intermediate). 
+-- assumption : events are in ascending order of time (so most recently emitted data)
+-- will represent all the previous data of a particular slice
+@dist(parallel='8', execGroup='2')
+partition with (house_id of formattedDataStream)
+begin
+	@info( name = 'AddToCurrentDataStream' )
+	from formattedDataStream#window.externalTime(ts, 5 min)
+	select slice_id, next_slice_id, sum( value ) as sum, count( value ) as count, ts, house_id, household_id, plug_id
+	insert into currentDataStream;
+end;
+
+
+-- Update/Insert Historical data in historicalDataTable Table
+@dist(parallel='8', execGroup='3')
+partition with (house_id of currentDataStream)
+begin
+	@info( name = 'GetStateUpdateStream' )
+	from every e1=currentDataStream, e2=currentDataStream[e1.slice_id != e2.slice_id]
+	select e1.slice_id as slice_id, e1.sum as sum, e1.count as count
+	insert into stateUpdateStream;
+
+	-- Update Historical data in historicalDataTable Table
+	@info( name = 'UpdateHistoricalDataTable' )
+	from stateUpdateStream[ (( slice_id == historicalDataTable.slice_id ) in historicalDataTable)]#window.length(1) join historicalDataTable
+	select stateUpdateStream.slice_id, stateUpdateStream.sum + historicalDataTable.sum as sum, stateUpdateStream.count + historicalDataTable.count as count
+	insert into historicalDataTable;
+
+	-- Add Historical data into historicalDataTable Table
+	@info( name = 'AddToHistoricalDataTable' )
+	from stateUpdateStream[ not (( slice_id == historicalDataTable.slice_id ) in historicalDataTable)]
+	select slice_id, sum, count
+	insert into historicalDataTable;
+
+	@info( name = 'CalculatePredicitonWithOutHistoricalData' )
+	from currentDataStream[ not (( next_slice_id == historicalDataTable.slice_id ) in historicalDataTable)]
+	select ts, house_id, household_id, plug_id, (currentDataStream.sum/currentDataStream.count) as predicted_load
+	insert into predictedLoadStream;
+
+	@info( name = 'CalculatePredicitonWithHistoricalData' )
+	from currentDataStream[((next_slice_id == historicalDataTable.slice_id ) in historicalDataTable)]#window.length(1) join historicalDataTable
+		on currentDataStream.next_slice_id == historicalDataTable.slice_id
+	select ts, house_id, household_id, plug_id, ((currentDataStream.sum/currentDataStream.count) + ( historicalDataTable.sum / historicalDataTable.count ) ) / 2.0 as predicted_load
+	insert into predictedLoadStream;
+end;
+
+
+-- Output Load Prediction Stream every 30 seconds
+@dist(parallel='8', execGroup='4')
+@info( name = 'OutputPredictedLoad' )
+from predictedLoadStream
+select ts, house_id, household_id, plug_id, predicted_load
+group by house_id, household_id, plug_id
+output last every 30 sec
+insert into plugBasedLoadPredictionStream ;

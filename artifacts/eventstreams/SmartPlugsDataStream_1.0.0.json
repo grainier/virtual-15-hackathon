@@ -1,0 +1,42 @@
+{
+  "name": "SmartPlugsDataStream",
+  "version": "1.0.0",
+  "nickName": "",
+  "description": "",
+  "metaData": [
+    {
+      "name": "type",
+      "type": "STRING"
+    }
+  ],
+  "payloadData": [
+    {
+      "name": "id",
+      "type": "LONG"
+    },
+    {
+      "name": "ts",
+      "type": "LONG"
+    },
+    {
+      "name": "value",
+      "type": "FLOAT"
+    },
+    {
+      "name": "property",
+      "type": "INT"
+    },
+    {
+      "name": "plug_id",
+      "type": "STRING"
+    },
+    {
+      "name": "household_id",
+      "type": "STRING"
+    },
+    {
+      "name": "house_id",
+      "type": "STRING"
+    }
+  ]
+}

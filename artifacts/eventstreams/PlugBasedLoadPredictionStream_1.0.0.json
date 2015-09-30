@@ -1,0 +1,28 @@
+{
+  "name": "PlugBasedLoadPredictionStream",
+  "version": "1.0.0",
+  "nickName": "",
+  "description": "",
+  "payloadData": [
+    {
+      "name": "ts",
+      "type": "LONG"
+    },
+    {
+      "name": "house_id",
+      "type": "STRING"
+    },
+    {
+      "name": "household_id",
+      "type": "STRING"
+    },
+    {
+      "name": "plug_id",
+      "type": "STRING"
+    },
+    {
+      "name": "predicted_load",
+      "type": "DOUBLE"
+    }
+  ]
+}
